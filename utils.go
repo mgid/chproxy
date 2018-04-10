@@ -114,9 +114,16 @@ func getQuerySnippet(req *http.Request) string {
 
 // getFullQuery returns full query from req.
 func getFullQuery(req *http.Request) ([]byte, error) {
-	if req.Method == http.MethodGet {
-		return []byte(req.URL.Query().Get("query")), nil
+
+	q := strings.TrimSpace(req.URL.Query().Get("query"))
+	if req.Method == http.MethodPost && strings.HasPrefix(q, "SELECT") {
+		return []byte(q), nil
 	}
+
+	if req.Method == http.MethodGet {
+		return []byte(q), nil
+	}
+
 	data, err := ioutil.ReadAll(req.Body)
 	if err != nil {
 		return nil, err

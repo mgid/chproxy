@@ -307,12 +307,11 @@ func (s *scope) decorateRequest(req *http.Request) (*http.Request, url.Values) {
 	origParams := req.URL.Query()
 	for key := range origParams {
 		if strings.HasSuffix(key,"_structure") || strings.HasSuffix(key,"_format") {
-			allowedParams = append(allowedParams, key)
+			if val := origParams.Get(key); len(val) > 0 {
+				params.Set(key, val)
+			}
 		}
 	}
-
-	log.Debugf("Allowed params: %v",
-		allowedParams)
 
 	// Keep allowed params.
 	for _, param := range allowedParams {
