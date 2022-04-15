@@ -39,12 +39,6 @@ builds:
     gcflags:
       - -trimpath={{.Env.GOPATH}}/src
 
-dockers:
-  - goos: linux
-    goarch: amd64
-    image_templates:
-      - "contentsquareplatform/chproxy:{{ .Version }}"
-
 snapshot:
   name_template: "{{ .FullCommit }}-SNAPSHOT"
 
@@ -52,7 +46,7 @@ release:
   # Repo in which the release will be created.
   # Default is extracted from the origin remote URL.
   github:
-    owner: ContentSquare
+    owner: mgid
     name: chproxy
 
   # If set to true, will not auto-publish the release.
