@@ -1,32 +1,19 @@
 ---
+before:
+  hooks:
+    - go mod tidy
+    - go mod download
+
 builds:
-  - id: linux-amd64
+  - id: chproxy
     binary: chproxy
     env:
-      - CGO_ENABLED=1
+      - CGO_ENABLED=0
     goos:
       - linux
+      - darwin
     goarch:
       - amd64
-    flags:
-      - "-tags={{ .Env.BUILD_TAG }}"
-    ldflags:
-      - -s
-      - -w
-      - -X main.buildTime={{ .Date }}
-      - -X main.buildRevision={{ .FullCommit }}
-      - -X main.buildTag={{ .Version }}
-    gcflags:
-      - -trimpath={{.Env.GOPATH}}/src
-
-  - id: linux-arm64
-    binary: chproxy-arm64
-    env:
-      - CGO_ENABLED=1
-      - CC=aarch64-linux-gnu-gcc
-    goos:
-      - linux
-    goarch:
       - arm64
     flags:
       - "-tags={{ .Env.BUILD_TAG }}"
@@ -43,7 +30,25 @@ dockers:
   - goos: linux
     goarch: amd64
     image_templates:
-      - "contentsquareplatform/chproxy:{{ .Version }}"
+      - "contentsquareplatform/chproxy:{{ .Tag }}"
+      - "contentsquareplatform/chproxy:{{ .Tag }}-amd64"
+    use: buildx
+    build_flag_templates:
+      - "--platform=linux/amd64"
+#  - goos: linux
+#    goarch: arm64
+#    image_templates:
+#      - "contentsquareplatform/chproxy:{{ .Tag }}-arm64"
+#    use: buildx
+#    build_flag_templates:
+#      - "--platform=linux/arm64"
+#  - goos: linux
+#    goarch: arm64
+#    image_templates:
+#      - "contentsquareplatform/chproxy:{{ .Tag }}-arm64v8"
+#    use: buildx
+#    build_flag_templates:
+#      - "--platform=linux/arm64/v8"
 
 snapshot:
   name_template: "{{ .FullCommit }}-SNAPSHOT"

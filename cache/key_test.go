@@ -15,7 +15,7 @@ func TestKeyString(t *testing.T) {
 				Query:   []byte("SELECT 1 FROM system.numbers LIMIT 10"),
 				Version: 2,
 			},
-			expected: "bebe3382e36ffdeea479b45d827b208a",
+			expected: "f11e8438adeeb325881c9a4da01925b3",
 		},
 		{
 			key: &Key{
@@ -23,7 +23,7 @@ func TestKeyString(t *testing.T) {
 				AcceptEncoding: "gzip",
 				Version:        2,
 			},
-			expected: "498c1af30fb94280fd7c7225c0c8fb39",
+			expected: "045cbb29a40a81c42378569cf0bc4078",
 		},
 		{
 			key: &Key{
@@ -32,7 +32,7 @@ func TestKeyString(t *testing.T) {
 				DefaultFormat:  "JSON",
 				Version:        2,
 			},
-			expected: "720292aa0647cc5e53e0b6e6033eef34",
+			expected: "186386850c49c60a49dbf7af89c671c9",
 		},
 		{
 			key: &Key{
@@ -42,7 +42,7 @@ func TestKeyString(t *testing.T) {
 				Database:       "foobar",
 				Version:        2,
 			},
-			expected: "5c6a70736d71e570faca739c4557780c",
+			expected: "68f3231d17cad0a3473e63f419e07580",
 		},
 		{
 			key: &Key{
@@ -53,7 +53,7 @@ func TestKeyString(t *testing.T) {
 				Namespace:      "ns123",
 				Version:        2,
 			},
-			expected: "08b4baf6825e53bbd18136a88abda4f8",
+			expected: "8f5e765e69df7c24a58f13cdf752ad2f",
 		},
 		{
 			key: &Key{
@@ -65,7 +65,32 @@ func TestKeyString(t *testing.T) {
 				Namespace:      "ns123",
 				Version:        2,
 			},
-			expected: "0e043f23ccd1b9039b33623b3b7c114a",
+			expected: "93a121f03f438ef7969540c78e943e2c",
+		},
+		{
+			key: &Key{
+				Query:           []byte("SELECT * FROM {table_name:Identifier} LIMIT 10"),
+				QueryParamsHash: 3825709,
+				Version:         3,
+			},
+			expected: "7edddc7d9db4bc4036dee36893f57cb1",
+		},
+		{
+			key: &Key{
+				Query:           []byte("SELECT * FROM {table_name:Identifier} LIMIT 10"),
+				QueryParamsHash: 3825710,
+				Version:         3,
+			},
+			expected: "68ba76fb53a6fa71ba8fe63dd34a2201",
+		},
+		{
+			key: &Key{
+				Query:              []byte("SELECT * FROM {table_name:Identifier} LIMIT 10"),
+				QueryParamsHash:    3825710,
+				Version:            3,
+				UserCredentialHash: 234324,
+			},
+			expected: "c5b58ecb4ff026e62ee846dc63c749d5",
 		},
 	}
 

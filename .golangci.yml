@@ -43,27 +43,27 @@ linters:
     - unused
     - varcheck
     - whitespace
-  disable:
-    # Should be readded in the future with a dedicated PR to do the fix
+    - gosec
+    - forcetypeassert
     - cyclop
     - exhaustive
-    - forcetypeassert
+    - govet
+    - nilerr
+    - wastedassign
+    - ineffassign
+  disable:
+    # Should be readded in the future with a dedicated PR to do the fix
     - funlen
     - gocognit
     - gofumpt
-    - gosec
-    - govet
     - ifshort
-    - ineffassign
     - nestif
-    - nilerr
     - nolintlint
     - revive
     - staticcheck
     - stylecheck
     - unconvert
     - unparam
-    - wastedassign
 
     # Disabled with a reason
     - gochecknoglobals # incompatible with the way we define our flags currently

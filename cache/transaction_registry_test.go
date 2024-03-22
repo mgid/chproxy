@@ -10,23 +10,23 @@ func TestInMemoryTransaction(t *testing.T) {
 	key := &Key{
 		Query: []byte("SELECT pending entries"),
 	}
-	inMemoryTransaction := newInMemoryTransactionRegistry(graceTime)
+	inMemoryTransaction := newInMemoryTransactionRegistry(graceTime, graceTime)
 
-	if err := inMemoryTransaction.Register(key); err != nil {
+	if err := inMemoryTransaction.Create(key); err != nil {
 		t.Fatalf("unexpected error: %s while registering new transaction", err)
 	}
 
-	isDone := inMemoryTransaction.IsDone(key)
-	if isDone {
+	status, err := inMemoryTransaction.Status(key)
+	if err != nil || !status.State.IsPending() {
 		t.Fatalf("unexpected: transaction should be pending")
 	}
 
-	if err := inMemoryTransaction.Unregister(key); err != nil {
+	if err := inMemoryTransaction.Complete(key); err != nil {
 		t.Fatalf("unexpected error: %s while unregistering transaction", err)
 	}
 
-	isDone = inMemoryTransaction.IsDone(key)
-	if !isDone {
+	status, err = inMemoryTransaction.Status(key)
+	if err != nil || !status.State.IsCompleted() {
 		t.Fatalf("unexpected: transaction should be done")
 	}
 

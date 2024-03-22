@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"hash/fnv"
 	"io"
-	"io/ioutil"
 	"net/http"
 	"sort"
 	"strconv"
@@ -21,6 +20,8 @@ func respondWith(rw http.ResponseWriter, err error, status int) {
 	rw.WriteHeader(status)
 	fmt.Fprintf(rw, "%s\n", err)
 }
+
+var defaultUser = "default"
 
 // getAuth retrieves auth credentials from request
 // according to CH documentation @see "https://clickhouse.yandex/docs/en/interfaces/http/"
@@ -42,7 +43,7 @@ func getAuth(req *http.Request) (string, string) {
 		return name, pass
 	}
 	// if still no credentials - treat it as `default` user request
-	return "default", ""
+	return defaultUser, ""
 }
 
 // getSessionId retrieves session id
@@ -56,7 +57,7 @@ func getSessionId(req *http.Request) string {
 func getSessionTimeout(req *http.Request) int {
 	params := req.URL.Query()
 	sessionTimeout, err := strconv.Atoi(params.Get("session_timeout"))
-	if err != nil && sessionTimeout > 0 {
+	if err == nil && sessionTimeout > 0 {
 		return sessionTimeout
 	}
 	return 60
@@ -97,8 +98,16 @@ func getQuerySnippetFromBody(req *http.Request) string {
 	// 'read' request body, so it traps into to crc.
 	// Ignore any errors, since getQuerySnippet is called only
 	// during error reporting.
-	io.Copy(ioutil.Discard, crc) // nolint
+	// Temporary solution: Quick and dirty way to work with the request body.
+	// TODO: Create an original copy of req.Body and work with the copy to avoid altering the original request.
+	// This current approach consumes the req.Body content with io.Copy(io.Discard, crc) to reset the internal state of crc.
+	// However, it is not the most efficient or safest method, as it modifies the original req.Body.
+	io.Copy(io.Discard, crc) // nolint
 	data := crc.String()
+
+	// Here, we attempt to restore req.Body by wrapping the string data in a ReadCloser.
+	// This is part of the temporary solution and should be replaced with a more robust method that does not consume the original req.Body.
+	req.Body = io.NopCloser(strings.NewReader(data))
 
 	u := getDecompressor(req)
 	if u == nil {
@@ -146,12 +155,12 @@ func getFullQueryFromBody(req *http.Request) ([]byte, error) {
 		return nil, nil
 	}
 
-	data, err := ioutil.ReadAll(req.Body)
+	data, err := io.ReadAll(req.Body)
 	if err != nil {
 		return nil, err
 	}
 	// restore body for further reading
-	req.Body = ioutil.NopCloser(bytes.NewBuffer(data))
+	req.Body = io.NopCloser(bytes.NewBuffer(data))
 	u := getDecompressor(req)
 	if u == nil {
 		return data, nil
@@ -185,6 +194,7 @@ func canCacheQuery(q []byte) bool {
 	return false
 }
 
+//nolint:cyclop // No clean way to split this.
 func skipLeadingComments(q []byte) []byte {
 	for len(q) > 0 {
 		switch q[0] {
@@ -259,12 +269,52 @@ func (dc gzipDecompressor) decompress(r io.Reader) ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("cannot ungzip query: %w", err)
 	}
-	return ioutil.ReadAll(gr)
+	return io.ReadAll(gr)
 }
 
 type chDecompressor struct{}
 
 func (dc chDecompressor) decompress(r io.Reader) ([]byte, error) {
 	lr := chdecompressor.NewReader(r)
-	return ioutil.ReadAll(lr)
+	return io.ReadAll(lr)
+}
+
+func calcMapHash(m map[string]string) (uint32, error) {
+	if len(m) == 0 {
+		return 0, nil
+	}
+	var keys []string
+	for key := range m {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	h := fnv.New32a()
+	for _, k := range keys {
+		str := fmt.Sprintf("%s=%s&", k, m[k])
+		_, err := h.Write([]byte(str))
+		if err != nil {
+			return 0, err
+		}
+	}
+	return h.Sum32(), nil
+}
+func calcCredentialHash(user string, pwd string) (uint32, error) {
+	h := fnv.New32a()
+	_, err := h.Write([]byte(user + pwd))
+	return h.Sum32(), err
+}
+
+// Function to read the request body and return it as a byte slice.
+// It also restores the req.Body to be used again.
+func readAndRestoreRequestBody(req *http.Request) ([]byte, error) {
+	// Read the entire request body.
+	body, err := io.ReadAll(req.Body)
+	if err != nil {
+		return nil, err
+	}
+	// Restore the req.Body with a new reader for the original content.
+	req.Body = io.NopCloser(bytes.NewReader(body))
+
+	// Return the read body.
+	return body, nil
 }

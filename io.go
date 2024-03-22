@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -8,9 +9,24 @@ import (
 	"time"
 
 	"github.com/contentsquare/chproxy/cache"
+	"github.com/contentsquare/chproxy/log"
 
 	"github.com/prometheus/client_golang/prometheus"
 )
+
+type ResponseWriterWithCode interface {
+	http.ResponseWriter
+	StatusCode() int
+}
+
+type StatResponseWriter interface {
+	http.ResponseWriter
+	http.CloseNotifier
+	StatusCode() int
+	SetStatusCode(code int)
+}
+
+var _ StatResponseWriter = &statResponseWriter{}
 
 // statResponseWriter collects the amount of bytes written.
 //
@@ -28,7 +44,13 @@ type statResponseWriter struct {
 	bytesWritten prometheus.Counter
 }
 
-func RespondWithData(rw http.ResponseWriter, data io.Reader, metadata cache.ContentMetadata, ttl time.Duration, statusCode int) error {
+const (
+	XCacheHit  = "HIT"
+	XCacheMiss = "MISS"
+	XCacheNA   = "N/A"
+)
+
+func RespondWithData(rw http.ResponseWriter, data io.Reader, metadata cache.ContentMetadata, ttl time.Duration, cacheHit string, statusCode int, labels prometheus.Labels) error {
 	h := rw.Header()
 	if len(metadata.Type) > 0 {
 		h.Set("Content-Type", metadata.Type)
@@ -43,18 +65,35 @@ func RespondWithData(rw http.ResponseWriter, data io.Reader, metadata cache.Cont
 		expireSeconds := uint(ttl / time.Second)
 		h.Set("Cache-Control", fmt.Sprintf("max-age=%d", expireSeconds))
 	}
+
+	h.Set("X-Cache", cacheHit)
+
 	rw.WriteHeader(statusCode)
 
 	if _, err := io.Copy(rw, data); err != nil {
+		var perr *cache.RedisCacheError
+
+		if errors.As(err, &perr) {
+			cacheCorruptedFetch.With(labels).Inc()
+			log.Debugf("redis cache error")
+		}
+		log.Errorf("cannot send response to client: %s", err)
 		return fmt.Errorf("cannot send response to client: %w", err)
 	}
 
 	return nil
 }
 
-func RespondWithoutData(rw http.ResponseWriter) error {
-	_, err := rw.Write([]byte{})
-	return err
+func (rw *statResponseWriter) SetStatusCode(code int) {
+	rw.statusCode = code
+}
+
+func (rw *statResponseWriter) StatusCode() int {
+	if rw.statusCode == 0 {
+		return http.StatusOK
+	}
+
+	return rw.statusCode
 }
 
 func (rw *statResponseWriter) Write(b []byte) (int, error) {
@@ -79,8 +118,14 @@ func (rw *statResponseWriter) WriteHeader(statusCode int) {
 // CloseNotify implements http.CloseNotifier
 func (rw *statResponseWriter) CloseNotify() <-chan bool {
 	// The rw.ResponseWriter must implement http.CloseNotifier
-	return rw.ResponseWriter.(http.CloseNotifier).CloseNotify()
+	rwc, ok := rw.ResponseWriter.(http.CloseNotifier)
+	if !ok {
+		panic("BUG: the wrapped ResponseWriter must implement http.CloseNotifier")
+	}
+	return rwc.CloseNotify()
 }
+
+var _ io.ReadCloser = &statReadCloser{}
 
 // statReadCloser collects the amount of bytes read.
 type statReadCloser struct {
@@ -94,6 +139,8 @@ func (src *statReadCloser) Read(p []byte) (int, error) {
 	src.bytesRead.Add(float64(n))
 	return n, err
 }
+
+var _ io.ReadCloser = &cachedReadCloser{}
 
 // cachedReadCloser caches the first 1Kb form the wrapped ReadCloser.
 type cachedReadCloser struct {

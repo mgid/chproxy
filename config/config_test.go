@@ -2,15 +2,21 @@ package config
 
 import (
 	"bytes"
+	"fmt"
 	"net"
+	"os"
 	"testing"
 	"time"
+
+	"github.com/contentsquare/chproxy/global/types"
 
 	"github.com/google/go-cmp/cmp"
 	"github.com/google/go-cmp/cmp/cmpopts"
 	"github.com/mohae/deepcopy"
 	"gopkg.in/yaml.v2"
 )
+
+var redisPort = types.RedisPort
 
 var fullConfig = Config{
 	Caches: []Cache{
@@ -21,8 +27,10 @@ var fullConfig = Config{
 				Dir:     "/path/to/longterm/cachedir",
 				MaxSize: ByteSize(100 << 30),
 			},
-			Expire:    Duration(time.Hour),
-			GraceTime: Duration(20 * time.Second),
+			Expire:             Duration(time.Hour),
+			GraceTime:          Duration(20 * time.Second),
+			MaxPayloadSize:     ByteSize(100 << 30),
+			SharedWithAllUsers: false,
 		},
 		{
 			Name: "shortterm",
@@ -31,7 +39,22 @@ var fullConfig = Config{
 				Dir:     "/path/to/shortterm/cachedir",
 				MaxSize: ByteSize(100 << 20),
 			},
-			Expire: Duration(10 * time.Second),
+			Expire:             Duration(10 * time.Second),
+			MaxPayloadSize:     ByteSize(100 << 20),
+			SharedWithAllUsers: true,
+		},
+		{
+			Name:               "redis-cache",
+			Mode:               "redis",
+			Expire:             Duration(10 * time.Second),
+			MaxPayloadSize:     ByteSize(100 << 30),
+			SharedWithAllUsers: true,
+			Redis: RedisCacheConfig{
+				Username:  "chproxy",
+				Password:  "password",
+				Addresses: []string{"127.0.0.1:" + redisPort},
+				PoolSize:  10,
+			},
 		},
 	},
 	HackMePlease: true,
@@ -48,18 +71,24 @@ var fullConfig = Config{
 		},
 		HTTPS: HTTPS{
 			ListenAddr: ":443",
-			Autocert: Autocert{
-				CacheDir:     "certs_dir",
-				AllowedHosts: []string{"example.com"},
+			TLS: TLS{
+				Autocert: Autocert{
+					CacheDir:     "certs_dir",
+					AllowedHosts: []string{"example.com"},
+				},
 			},
 			TimeoutCfg: TimeoutCfg{
 				ReadTimeout:  Duration(time.Minute),
-				WriteTimeout: Duration(140 * time.Second),
+				WriteTimeout: Duration(215 * time.Second),
 				IdleTimeout:  Duration(10 * time.Minute),
 			},
 		},
 		Metrics: Metrics{
 			NetworksOrGroups: []string{"office"},
+		},
+		Proxy: Proxy{
+			Enable: true,
+			Header: "CF-Connecting-IP",
 		},
 	},
 	LogDebug: true,
@@ -81,12 +110,12 @@ var fullConfig = Config{
 					MaxExecutionTime:     Duration(time.Minute),
 				},
 			},
-			HeartBeatInterval: Duration(time.Minute),
+			RetryNumber: 1,
 			HeartBeat: HeartBeat{
-				Interval: Duration(time.Minute),
+				Interval: Duration(5 * time.Second),
 				Timeout:  Duration(3 * time.Second),
-				Request:  "/?query=SELECT%201",
-				Response: "1\n",
+				Request:  "/ping",
+				Response: "Ok.\n",
 			},
 		},
 		{
@@ -118,26 +147,30 @@ var fullConfig = Config{
 					MaxQueueTime:         Duration(70 * time.Second),
 				},
 			},
+			RetryNumber: 2,
 			HeartBeat: HeartBeat{
 				Interval: Duration(5 * time.Second),
 				Timeout:  Duration(3 * time.Second),
-				Request:  "/?query=SELECT%201",
-				Response: "1\n",
+				Request:  "/ping",
+				Response: "Ok.\n",
+				User:     "hbuser",
+				Password: "hbpassword",
 			},
 		},
 		{
-			Name:   "thrid cluster",
+			Name:   "third cluster",
 			Scheme: "http",
-			Nodes:  []string{"thrid1:8123", "thrid2:8123"},
+			Nodes:  []string{"third1:8123", "third2:8123"},
 			ClusterUsers: []ClusterUser{
 				{
 					Name: "default",
 				},
 			},
+			RetryNumber: 3,
 			HeartBeat: HeartBeat{
 				Interval: Duration(2 * time.Minute),
 				Timeout:  Duration(10 * time.Second),
-				Request:  "/ping",
+				Request:  "/?query=SELECT%201",
 				Response: "Ok.\n",
 			},
 		},
@@ -176,19 +209,25 @@ var fullConfig = Config{
 		},
 	},
 
+	ConnectionPool: ConnectionPool{
+		MaxIdleConns:        100,
+		MaxIdleConnsPerHost: 2,
+	},
+
 	Users: []User{
 		{
-			Name:         "web",
-			Password:     "****",
-			ToCluster:    "first cluster",
-			ToUser:       "web",
-			DenyHTTP:     true,
-			AllowCORS:    true,
-			ReqPerMin:    4,
-			MaxQueueSize: 100,
-			MaxQueueTime: Duration(35 * time.Second),
-			Cache:        "longterm",
-			Params:       "web",
+			Name:             "web",
+			Password:         "****",
+			ToCluster:        "first cluster",
+			ToUser:           "web",
+			DenyHTTP:         true,
+			AllowCORS:        true,
+			ReqPerMin:        4,
+			MaxQueueSize:     100,
+			MaxQueueTime:     Duration(35 * time.Second),
+			MaxExecutionTime: Duration(2 * time.Minute),
+			Cache:            "longterm",
+			Params:           "web",
 		},
 		{
 			Name:                 "default",
@@ -224,7 +263,8 @@ var fullConfig = Config{
 			},
 		},
 	},
-	networkReg: map[string]Networks{},
+	MaxErrorReasonSize: ByteSize(100 << 20),
+	networkReg:         map[string]Networks{},
 }
 
 func TestLoadConfig(t *testing.T) {
@@ -249,7 +289,7 @@ func TestLoadConfig(t *testing.T) {
 						NetworksOrGroups: []string{"127.0.0.1"},
 						TimeoutCfg: TimeoutCfg{
 							ReadTimeout:  Duration(time.Minute),
-							WriteTimeout: Duration(time.Minute),
+							WriteTimeout: Duration(3 * time.Minute),
 							IdleTimeout:  Duration(10 * time.Minute),
 						},
 					},
@@ -267,18 +307,21 @@ func TestLoadConfig(t *testing.T) {
 						HeartBeat: HeartBeat{
 							Interval: Duration(5 * time.Second),
 							Timeout:  Duration(3 * time.Second),
-							Request:  "/?query=SELECT%201",
-							Response: "1\n",
+							Request:  "/ping",
+							Response: "Ok.\n",
 						},
+						RetryNumber: 0,
 					},
 				},
 				Users: []User{
 					{
-						Name:      "default",
-						ToCluster: "cluster",
-						ToUser:    "default",
+						Name:             "default",
+						ToCluster:        "cluster",
+						ToUser:           "default",
+						MaxExecutionTime: Duration(120 * time.Second),
 					},
 				},
+				MaxErrorReasonSize: ByteSize(1 << 50),
 			},
 		},
 	}
@@ -298,7 +341,7 @@ func TestLoadConfig(t *testing.T) {
 				t.Fatalf("%s", err)
 			}
 			if !bytes.Equal(got, exp) {
-				t.Fatalf("unexpected config result: \ngot\n\n%s\n expected\n\n%s", got, exp)
+				t.Fatalf("unexpected config result. Diff: %s", cmp.Diff(got, exp))
 			}
 		})
 	}
@@ -421,6 +464,16 @@ func TestBadConfig(t *testing.T) {
 			"`max_queue_size` must be set if `max_queue_time` is set for \"default\"",
 		},
 		{
+			"packet size token burst and rate on user",
+			"testdata/bad.packet_size_token_burst_rate_user.yml",
+			"`request_packet_size_tokens_rate` must be set if `request_packet_size_tokens_burst` is set for \"default\"",
+		},
+		{
+			"packet size token burst and rate on user on cluster_user",
+			"testdata/bad.packet_size_token_burst_rate_cluster_user.yml",
+			"`request_packet_size_tokens_rate` must be set if `request_packet_size_tokens_burst` is set for \"default\"",
+		},
+		{
 			"cache max size",
 			"testdata/bad.cache_max_size.yml",
 			"cannot parse byte size \"-10B\": it must be positive float followed by optional units. For example, 1.5Gb, 3T",
@@ -436,19 +489,29 @@ func TestBadConfig(t *testing.T) {
 			"`param_group.params` must contain at least one param",
 		},
 		{
-			"duplicate heartbeat interval",
-			"testdata/bad.heartbeat_interval.duplicate.yml",
-			"cannot be use `heartbeat_interval` with `heartbeat` section",
-		},
-		{
 			"empty heartbeat section",
-			"testdata/bad.heartbeat_section.empty1.yml",
+			"testdata/bad.heartbeat_section.empty.yml",
 			"`cluster.heartbeat` cannot be unset for \"cluster\"",
 		},
 		{
-			"empty heartbeat section with heartbeat_interval",
-			"testdata/bad.heartbeat_section.empty2.yml",
-			"cannot be use `heartbeat_interval` with `heartbeat` section",
+			"max payload size to cache",
+			"testdata/bad.max_payload_size.yml",
+			"cannot parse byte size \"-10B\": it must be positive float followed by optional units. For example, 1.5Gb, 3T",
+		},
+		{
+			"user is marked as is_wildcarded, but it's name is not consist of a prefix, underscore and asterisk",
+			"testdata/bad.wildcarded_users.no.wildcard.yml",
+			"user name \"analyst_named\" marked 'is_wildcared' does not match 'prefix*' or '*suffix' or '*'",
+		},
+		{
+			"proxy header without enabling proxy settings",
+			"testdata/bad.proxy_settings.yml",
+			"`proxy_header` cannot be set without enabling proxy settings",
+		},
+		{
+			"max error reason size",
+			"testdata/bad.max_error_reason_size.yml",
+			"cannot parse byte size \"-10B\": it must be positive float followed by optional units. For example, 1.5Gb, 3T",
 		},
 	}
 
@@ -541,7 +604,7 @@ func TestParseDuration(t *testing.T) {
 		},
 	}
 	for _, tc := range testCases {
-		v, err := parseDuration(tc.value)
+		v, err := StringToDuration(tc.value)
 		if err != nil {
 			t.Fatalf("unexpected duration conversion error: %s", err)
 		}
@@ -585,7 +648,7 @@ func TestParseDurationNegative(t *testing.T) {
 		},
 	}
 	for _, tc := range testCases {
-		_, err := parseDuration(tc.value)
+		_, err := StringToDuration(tc.value)
 		if err == nil {
 			t.Fatalf("expected to get parse error; got: nil")
 		}
@@ -606,7 +669,7 @@ func TestConfigTimeouts(t *testing.T) {
 			"testdata/default_values.yml",
 			TimeoutCfg{
 				ReadTimeout:  Duration(time.Minute),
-				WriteTimeout: Duration(time.Minute),
+				WriteTimeout: Duration(3 * time.Minute), // defaultExecutionTime + 1 min
 				IdleTimeout:  Duration(10 * time.Minute),
 			},
 		},
@@ -686,6 +749,7 @@ func TestRemovalSensitiveData(t *testing.T) {
 	conf.Clusters[1].ClusterUsers[0].Password = "XXX"
 	conf.Clusters[1].ClusterUsers[1].Password = "XXX"
 	conf.Clusters[2].ClusterUsers[0].Password = "XXX"
+	conf.Caches[2].Redis.Password = "XXX"
 
 	if !cmp.Equal(conf, confSafe, cmpopts.IgnoreUnexported(Config{})) {
 		t.Fatalf("confCopy should have sensitive data replaced with XXX values,\n the diff is: %s",
@@ -695,7 +759,7 @@ func TestRemovalSensitiveData(t *testing.T) {
 }
 
 func TestConfigString(t *testing.T) {
-	expected := `server:
+	expected := fmt.Sprintf(`server:
   http:
     listen_addr: :9090
     allowed_networks:
@@ -713,11 +777,14 @@ func TestConfigString(t *testing.T) {
       allowed_hosts:
       - example.com
     read_timeout: 1m
-    write_timeout: 140s
+    write_timeout: 215s
     idle_timeout: 10m
   metrics:
     allowed_networks:
     - office
+  proxy:
+    enable: true
+    header: CF-Connecting-IP
 clusters:
 - name: first cluster
   scheme: http
@@ -732,13 +799,13 @@ clusters:
   kill_query_user:
     name: default
     password: XXX
-  heartbeat_interval: 1m
   heartbeat:
-    interval: 1m
+    interval: 5s
     timeout: 3s
-    request: /?query=SELECT%201
+    request: /ping
     response: |
-      1
+      Ok.
+  retry_number: 1
 - name: second cluster
   scheme: https
   replicas:
@@ -767,28 +834,33 @@ clusters:
   heartbeat:
     interval: 5s
     timeout: 3s
-    request: /?query=SELECT%201
+    request: /ping
     response: |
-      1
-- name: thrid cluster
+      Ok.
+    user: hbuser
+    password: hbpassword
+  retry_number: 2
+- name: third cluster
   scheme: http
   nodes:
-  - thrid1:8123
-  - thrid2:8123
+  - third1:8123
+  - third2:8123
   users:
   - name: default
     password: XXX
   heartbeat:
     interval: 2m
     timeout: 10s
-    request: /ping
+    request: /?query=SELECT%%201
     response: |
       Ok.
+  retry_number: 3
 users:
 - name: web
   password: XXX
   to_cluster: first cluster
   to_user: web
+  max_execution_time: 2m
   requests_per_minute: 4
   max_queue_size: 100
   max_queue_time: 35s
@@ -816,6 +888,7 @@ network_groups:
 - name: reporting-apps
   networks:
   - 10.10.10.0/24
+max_error_reason_size: 104857600
 caches:
 - mode: file_system
   name: longterm
@@ -824,12 +897,26 @@ caches:
   file_system:
     dir: /path/to/longterm/cachedir
     max_size: 107374182400
+  max_payload_size: 107374182400
 - mode: file_system
   name: shortterm
   expire: 10s
   file_system:
     dir: /path/to/shortterm/cachedir
     max_size: 104857600
+  max_payload_size: 104857600
+  shared_with_all_users: true
+- mode: redis
+  name: redis-cache
+  expire: 10s
+  redis:
+    username: chproxy
+    password: XXX
+    addresses:
+    - 127.0.0.1:%s
+    pool_size: 10
+  max_payload_size: 107374182400
+  shared_with_all_users: true
 param_groups:
 - name: cron-job
   params:
@@ -845,11 +932,43 @@ param_groups:
     value: "30"
   - key: max_execution_time
     value: "30"
-`
+connection_pool:
+  max_idle_conns: 100
+  max_idle_conns_per_host: 2
+`, redisPort)
 	tested := fullConfig.String()
 	if tested != expected {
 		t.Fatalf("the stringify version of fullConfig is not what it's expected: %s",
 			cmp.Diff(tested, expected))
 
+	}
+}
+
+func TestConfigReplaceEnvVars(t *testing.T) {
+	var testCases = []struct {
+		name             string
+		file             string
+		expectedPassword string
+	}{
+		{
+			"replace env vars with the style of ${}",
+			"testdata/envvars.simple.yml",
+			"MyPassword",
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			os.Setenv("CHPROXY_PASSWORD", tc.expectedPassword)
+
+			cfg, err := LoadFile(tc.file)
+			if err != nil {
+				t.Fatalf("unexpected error: %s", err)
+			}
+			got := cfg.Users[0].Password
+			if got != tc.expectedPassword {
+				t.Fatalf("got password %v; expected to have: %v", got, tc.expectedPassword)
+			}
+		})
 	}
 }

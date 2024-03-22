@@ -1,10 +1,8 @@
 package cache
 
 import (
-	"bytes"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"math/rand"
 	"os"
 	"path/filepath"
@@ -17,10 +15,6 @@ import (
 	"github.com/contentsquare/chproxy/config"
 	"github.com/contentsquare/chproxy/log"
 )
-
-// Version must be increased with each backward-incompatible change
-// in the cache storage.
-const Version = 3
 
 var cachefileRegexp = regexp.MustCompile(`^[0-9a-f]{32}$`)
 
@@ -102,7 +96,8 @@ func (f *fileSystemCache) Get(key *Key) (*CachedData, error) {
 		return nil, ErrMissing
 	}
 
-	defer file.Close()
+	// the file will be closed once it's read as an io.ReaderCloser
+	// This  ReaderCloser is stored in the returned CachedData
 	fi, err := file.Stat()
 	if err != nil {
 		return nil, fmt.Errorf("cache %q: cannot stat %q: %w", f.Name(), fp, err)
@@ -112,28 +107,26 @@ func (f *fileSystemCache) Get(key *Key) (*CachedData, error) {
 	if age > f.expire {
 		// check if file exceeded expiration time + grace time
 		if age > f.expire+f.grace {
+			file.Close()
 			return nil, ErrMissing
 		}
 		// Serve expired file in the hope it will be substituted
-		// with the fresh file during graceTime.
+		// with the fresh file during deadline.
 	}
 
-	b, err := ioutil.ReadAll(file)
-
 	if err != nil {
+		file.Close()
 		return nil, fmt.Errorf("failed to read file content from %q: %w", f.Name(), err)
 	}
 
-	reader := bytes.NewReader(b)
-
-	metadata, err := decodeHeader(reader)
+	metadata, err := decodeHeader(file)
 	if err != nil {
 		return nil, err
 	}
 
 	value := &CachedData{
 		ContentMetadata: *metadata,
-		Data:            reader,
+		Data:            file,
 		Ttl:             f.expire - age,
 	}
 
@@ -142,7 +135,7 @@ func (f *fileSystemCache) Get(key *Key) (*CachedData, error) {
 
 // decodeHeader decodes header from raw byte stream. Data is encoded as follows:
 // length(contentType)|contentType|length(contentEncoding)|contentEncoding|length(contentLength)|contentLength|cachedData
-func decodeHeader(reader *bytes.Reader) (*ContentMetadata, error) {
+func decodeHeader(reader io.Reader) (*ContentMetadata, error) {
 	contentType, err := readHeader(reader)
 	if err != nil {
 		return nil, fmt.Errorf("cannot read Content-Type from provided reader: %w", err)
@@ -242,7 +235,7 @@ func (f *fileSystemCache) clean() {
 
 	log.Debugf("cache %q: start cleaning dir %q", f.Name(), f.dir)
 
-	// Remove cached files after a graceTime from their expiration,
+	// Remove cached files after a deadline from their expiration,
 	// so they may be served until they are substituted with fresh files.
 	expire := f.expire + f.grace
 
@@ -280,6 +273,7 @@ func (f *fileSystemCache) clean() {
 	//
 	// Seed the generator with the current time in order to randomize
 	// set of files to be removed below.
+	// nolint:gosec // not security sensitve, only used internally.
 	rnd := rand.New(rand.NewSource(time.Now().UnixNano()))
 
 	for totalSize > f.maxSize && loopsCount < 3 {
